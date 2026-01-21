@@ -9,7 +9,7 @@ services:
       - postgres-db-volume:/var/lib/postgresql/data
 
   airflow-webserver:
-    image: apache/airflow:2.8.4
+    image: apache/airflow:2.8.4-python3.10
     depends_on:
       - postgres
     environment:
@@ -21,12 +21,13 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ../scripts:/opt/airflow/scripts
+      - ../data:/opt/airflow/data
     ports:
       - "8080:8080"
     command: webserver
 
   airflow-scheduler:
-    image: apache/airflow:2.8.4
+    image: apache/airflow:2.8.4-python3.10
     depends_on:
       - airflow-webserver
     environment:
@@ -37,6 +38,7 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ../scripts:/opt/airflow/scripts
+      - ../data:/opt/airflow/data
     command: scheduler
 
 volumes:
