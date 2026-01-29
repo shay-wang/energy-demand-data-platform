@@ -53,9 +53,7 @@ def get_last_ingested_date(raw_dir: Path) -> date | None:
     return max(dates) if dates else None
 
 
-if __name__ == "__main__":
-    load_dotenv()
-    api_key = os.getenv("EIA_API_KEY")
+def run_incremental_ingestion(api_key):
     if not api_key:
         raise RuntimeError("EIA_API_KEY not set")
 
@@ -65,9 +63,16 @@ if __name__ == "__main__":
 
     if start_date > end_date:
         print("No new data to ingest.")
-    else:
-        data = fetch_eia_data(api_key, start_date, end_date)
-        if not data.get("response", {}).get("data"):
-            print("No data returned from API. Skipping write.")
-        else:
-            save_raw_data(data, RAW_DIR, start_date, end_date)
+        return
+    
+    data = fetch_eia_data(api_key, start_date, end_date)
+    if not data.get("response", {}).get("data"):
+        print("No data returned from API. Skipping write.")
+        return
+    
+    save_raw_data(data, RAW_DIR, start_date, end_date)
+
+if __name__ == "__main__":
+    load_dotenv()
+    api_key = os.getenv("EIA_API_KEY")
+    run_incremental_ingestion(api_key)
