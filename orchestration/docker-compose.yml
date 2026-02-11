@@ -20,7 +20,7 @@ services:
       PYTHONPATH: /opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
-      - ../scripts:/opt/airflow/scripts
+      - ../ingestion:/opt/airflow/ingestion
       - ../data:/opt/airflow/data
       - airflow-logs:/opt/airflow/logs
     ports:
@@ -38,7 +38,7 @@ services:
       PYTHONPATH: /opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
-      - ../scripts:/opt/airflow/scripts
+      - ../ingestion:/opt/airflow/ingestion
       - ../data:/opt/airflow/data
       - airflow-logs:/opt/airflow/logs
     command: scheduler

@@ -3,7 +3,7 @@ from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
 
 
-from scripts.eia_ingest import fetch_eia_data, save_raw_data
+from ingestion.eia_ingest import fetch_eia_data, save_raw_data
 
 
 def run_eia_ingestion():

@@ -21,7 +21,7 @@ Transformation, analytics modeling, and serving layers will be added incremental
 
 ### 1. Initialize the database and create an admin user (first run only)
 ```bash
-cd airflow
+cd orchestration
 
 docker compose run --rm airflow-webserver airflow db migrate
 docker compose run --rm airflow-webserver airflow users create \
