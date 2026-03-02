@@ -12,9 +12,10 @@ provider "google" {
   region  = "us-central1"
 }
 
+# GCS Bucket - landing zone
 resource "google_storage_bucket" "landing_zone" {
   name          = "${var.gcp_project_id}-landing"
-  location      = "US"
+  location      = var.location
   force_destroy = true
 
   lifecycle_rule {
@@ -25,4 +26,12 @@ resource "google_storage_bucket" "landing_zone" {
       type = "AbortIncompleteMultipartUpload"
     }
   }
+}
+
+# BigQuery Dataset - Bronze Layer
+resource "google_bigquery_dataset" "bronze" {
+  dataset_id                 = "bronze"
+  location                   = var.location
+  description                = "Raw ingested data with JSON blobs"
+  delete_contents_on_destroy = true
 }
