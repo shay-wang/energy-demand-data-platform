@@ -2,15 +2,14 @@ import requests
 import json
 from datetime import date
 from pathlib import Path
+from google.cloud import storage
+from google.oauth2 import service_account
 from dotenv import load_dotenv
 import os
 import pendulum
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BASE_DIR = PROJECT_ROOT / "data" / "raw" / "eia"
 
-
-def fetch_eia_data(api_key, target_date: date):
+def fetch_eia_data(api_key, target_date: date, bucket_name: str, client):
     if not api_key:
         raise RuntimeError("EIA_API_KEY not set")
     local_tz = pendulum.timezone("America/Chicago")
@@ -36,19 +35,30 @@ def fetch_eia_data(api_key, target_date: date):
     if not data.get("response", {}).get("data"):
         print("No data returned from API. Skipping write.")
         return
-    filename = f"eia_energy_{target_date.isoformat()}.json"
-    output_dir = BASE_DIR
-    output_file_path = output_dir / filename
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_file_path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(
-        f"Saved {len(data.get('response', {}).get('data', []))} records to {output_file_path}"
+
+    filename = f"eia/eia_energy_{target_date.isoformat()}.json"
+
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(filename)
+
+    blob.upload_from_string(
+        data=json.dumps(data, indent=2), content_type="application/json"
     )
+
+    print(f"Successfully uploaded to gs://{bucket_name}/{filename}")
 
 
 if __name__ == "__main__":
-    load_dotenv()
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    load_dotenv(PROJECT_ROOT / ".env")
+
+    creds_path = os.getenv("INGEST_SA_KEY_PATH")
+    abs_path = PROJECT_ROOT / creds_path
+
+    creds = service_account.Credentials.from_service_account_file(abs_path)
+    client = storage.Client(credentials=creds, project=os.getenv("GCP_PROJECT_ID"))
+
     api_key = os.getenv("EIA_API_KEY")
-    target_date = date.fromisoformat("2026-02-01")
-    fetch_eia_data(api_key, target_date)
+    target_date = date.fromisoformat("2026-02-10")
+    bucket_name = os.getenv("GCS_LANDING_BUCKET")
+    fetch_eia_data(api_key, target_date, bucket_name, client)
