@@ -3,3 +3,4 @@ ipykernel
 python-dotenv
 pendulum
 google-cloud-storage
+dbt-bigquery
