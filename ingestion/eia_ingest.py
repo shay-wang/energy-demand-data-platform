@@ -1,74 +1,67 @@
 import requests
 import json
-from datetime import date
-from pathlib import Path
-from google.cloud import storage
-from google.oauth2 import service_account
-from dotenv import load_dotenv
+from datetime import datetime
 import os
-import pendulum
 
 
-def fetch_eia_data(api_key, target_date: date, bucket_name: str, client):
-    # Check if the API key is set
-    if not api_key:
-        raise RuntimeError("EIA_API_KEY not set")
-
-    # Setup timezone as US Central and get the correct query hour range for a target date
-    local_tz = pendulum.timezone("America/Chicago")
-    start_dt = pendulum.datetime(
-        target_date.year, target_date.month, target_date.day, tz=local_tz
-    )
-    end_dt = start_dt.end_of("day")
-    start_str = start_dt.format("YYYY-MM-DDTHH") + start_dt.format("ZZ")[:3]
-    end_str = end_dt.format("YYYY-MM-DDTHH") + end_dt.format("ZZ")[:3]
+def fetch_single_region(
+    api_key, region_conf, target_date, bucket_name=None, client=None, local_path=None
+):
+    """
+    Fetches data for ONE region and saves it either to GCS or Local Disk.
+    """
+    subba = region_conf["id"]
 
     # Fetch data
-    url = " https://api.eia.gov/v2/electricity/rto/region-sub-ba-data/data/"
+    url = "https://api.eia.gov/v2/electricity/rto/region-sub-ba-data/data/"
     params = {
         "api_key": api_key,
-        "frequency": "local-hourly",
+        "frequency": "hourly",
         "data[0]": "value",
-        "facets[parent][]": "ERCO",
-        "facets[subba][]": "NCEN",
-        "start": start_str,
-        "end": end_str,
+        "facets[subba][]": subba,
+        "start": target_date.strftime("%Y-%m-%dT00"),
+        "end": target_date.strftime("%Y-%m-%dT23"),
+        "sort[0][column]": "period",
+        "sort[0][direction]": "asc",
     }
+
     response = requests.get(url, params=params)
     response.raise_for_status()
-    raw_response = response.json()
-    records = raw_response.get("response", {}).get("data", [])
+    data = response.json()["response"]["data"]
 
-    if not records:
-        print("No data returned from API. Skipping write.")
-        return
+    # Convert to NDJSON
+    ndjson_content = "\n".join([json.dumps(record) for record in data])
 
-    # Convert to NDJSON format
-    ndjson_data = "\n".join([json.dumps(record) for record in records])
+    # Define Hive-style path and file name. (Example: eia/year=2026/month=03/day=02/hourly_demand_NCEN.json)
+    file_name = f"hourly_demand_{subba}.json"
+    date_path = f"year={target_date.year}/month={target_date.strftime('%m')}/day={target_date.strftime('%d')}"
 
-    # Set up Hive-style path. (Example: eia/year=2026/month=03/day=02/)
-    path_parts = [
-        "eia",
-        f"year={target_date.year}",
-        f"month={target_date.strftime('%m')}",
-        f"day={target_date.strftime('%d')}",
-    ]
-    folder_path = "/".join(path_parts)
-    filename = f"{folder_path}/local_hourly_demand.json"
+    # Save locally (for testing)
+    if local_path:
+        full_local_dir = os.path.join(local_path, "eia", date_path)
+        os.makedirs(full_local_dir, exist_ok=True)
+        with open(os.path.join(full_local_dir, file_name), "w") as f:
+            f.write(ndjson_content)
+        print(f"Saved locally to {full_local_dir}/{file_name}")
 
-    # Load data to GCS landing bucket
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(filename)
+    # Upload to GCS (For Production)
+    if client and bucket_name:
+        gcs_path = f"eia/{date_path}/{file_name}"
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(gcs_path)
+        blob.upload_from_string(ndjson_content, content_type="application/x-ndjson")
+        print(f"Successfully uploaded to gs://{bucket_name}/{gcs_path}")
 
-    blob.upload_from_string(
-        data= ndjson_data,
-        content_type="application/x-ndjson"
-    )
-
-    print(f"Successfully uploaded to gs://{bucket_name}/{filename}")
+    return data
 
 
 if __name__ == "__main__":
+    import yaml
+    from pathlib import Path
+    from google.cloud import storage
+    from google.oauth2 import service_account
+    from dotenv import load_dotenv
+
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     load_dotenv(PROJECT_ROOT / ".env")
 
@@ -78,7 +71,22 @@ if __name__ == "__main__":
     creds = service_account.Credentials.from_service_account_file(abs_path)
     client = storage.Client(credentials=creds, project=os.getenv("GCP_PROJECT_ID"))
 
-    api_key = os.getenv("EIA_API_KEY")
-    target_date = date.fromisoformat("2026-02-11")
     bucket_name = os.getenv("GCS_LANDING_BUCKET")
-    fetch_eia_data(api_key, target_date, bucket_name, client)
+
+    with open("ingestion/regions.yaml", "r") as f:
+        config = yaml.safe_load(f)
+
+    # fetch_single_region(
+    #     api_key=os.getenv("EIA_API_KEY"),
+    #     region_conf=config['regions'][0],
+    #     target_date=datetime(2026, 2, 10),
+    #     local_path=PROJECT_ROOT / "data"
+    # )
+
+    fetch_single_region(
+        api_key=os.getenv("EIA_API_KEY"),
+        region_conf=config["regions"][0],
+        target_date=datetime(2026, 2, 12),
+        client=client,
+        bucket_name=bucket_name,
+    )

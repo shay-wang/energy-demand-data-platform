@@ -1,0 +1,21 @@
+regions:
+  - id: "NCEN"
+    parent: "ERCO"
+    name: "North Central"
+    lat: 32.89
+    lon: -97.04
+    active: true
+
+  - id: "COAS"
+    parent: "ERCO"
+    name: "Coast"
+    lat: 29.98
+    lon: -95.34
+    active: true
+
+  - id: "WEST"
+    parent: "ERCO"
+    name: "West"
+    lat: 31.94
+    lon: -102.20
+    active: false
