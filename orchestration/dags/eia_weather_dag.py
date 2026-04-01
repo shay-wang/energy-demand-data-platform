@@ -1,7 +1,7 @@
 from datetime import timedelta
 import yaml
 import pendulum
-from airflow.decorators import dag, task
+from airflow.decorators import dag, task, task_group
 from airflow.models import Variable
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.providers.google.cloud.operators.bigquery import (
@@ -16,7 +16,7 @@ CONFIG_PATH = "/opt/airflow/ingestion/regions.yaml"
     dag_id="energy_and_weather_daily",
     description="Extract EIA and Open-Meteo data to GCS, then load/transform in BQ.",
     start_date=pendulum.datetime(2026, 2, 10, tz=local_tz),
-    schedule="30 4 * * *",  # Everyday at 4:30 am Central time
+    schedule="0 1 * * *",  # Everyday at 1:00 am Central time
     catchup=False,
     tags=["eia", "weather", "ingestion", "bronze"],
     max_active_runs=1,
@@ -25,10 +25,9 @@ CONFIG_PATH = "/opt/airflow/ingestion/regions.yaml"
         "retry_delay": timedelta(minutes=5),
     },
 )
-
 def energy_weather_pipeline():
 
-    # -- SETUP TASK --
+    # -- CONFIGURATION LAYER --
     @task
     def get_enabled_regions():
         """Reads YAML and returns a list of region dicts."""
@@ -37,120 +36,125 @@ def energy_weather_pipeline():
         # Return only active regions
         return [r for r in config["regions"] if r.get("active", True)]
 
-    # -- EXTRACTION TASKS (Parallel Dynamic Mapping) --
+    # -- EXTRACTION LAYER (Parallel Dynamic Mapping) --
+    @task_group(group_id="api_extraction_layer")
+    def extraction_layer(region_list):
 
-    # Fetch data from EIA API and move it to Landing (GCS)
-    @task(task_id="extract_eia_to_gcs")
-    def extract_eia_task(region_config, data_interval_end):
-        """
-        Run once per region to fetch T-3 settled data from EIA API and save as NDJSON in GCS Landing.
-        """
+        # Fetch data from EIA API and move it to Landing (GCS)
+        @task(task_id="extract_eia_api")
+        def extract_eia(region_config, data_interval_end):
+            """
+            Run once per region to fetch T-3 settled data from EIA API and save as NDJSON in GCS Landing.
+            """
 
-        from ingestion.eia_ingest import fetch_single_region
-        
-        # T-3 Logic
-        target_date = data_interval_end - timedelta(days=3)
+            from ingestion.eia_ingest import fetch_single_region
 
-        print(f"Fetching data for target date: {target_date.date()}")
+            # T-3 Logic
+            target_date = data_interval_end - timedelta(days=3)
 
-        api_key = Variable.get("EIA_API_KEY")
-        bucket_name = Variable.get("GCS_LANDING_BUCKET")
+            print(f"Fetching full 24hr window for target date: {target_date.date()}")
 
-        # Handle connection to GSC bucket
-        hook = GCSHook(gcp_conn_id="google_cloud_default")
-        client = hook.get_conn()
+            api_key = Variable.get("EIA_API_KEY")
+            bucket_name = Variable.get("GCS_LANDING_BUCKET")
 
-        fetch_single_region(api_key, region_config, target_date, bucket_name, client)
-        return f"eia/year={target_date.year}/month={target_date.strftime('%m')}/day={target_date.strftime('%d')}/"
+            # Handle connection to GSC bucket
+            hook = GCSHook(gcp_conn_id="google_cloud_default")
+            client = hook.get_conn()
 
-    # Fetch data from Open-Meteo API and move it to Landing (GCS)
-    @task(task_id="extract_weather_to_gcs")
-    def extract_weather_task(region_config, data_interval_end):
-        """
-        Run once per region to fetch T-3 settled data from Open-Meteo API and save as NDJSON in GCS Landing.
-        """
-        from ingestion.weather_ingest import fetch_weather_region
+            fetch_single_region(
+                api_key, region_config, target_date, bucket_name, client
+            )
+            return f"eia/year={target_date.year}/month={target_date.strftime('%m')}/day={target_date.strftime('%d')}/"
 
-        # Match weather date to EIA data date (T-3)
-        target_date = data_interval_end - timedelta(days=3)
+        # Fetch data from Open-Meteo API and move it to Landing (GCS)
+        @task(task_id="extract_weather_api")
+        def extract_weather(region_config, data_interval_end):
+            """
+            Run once per region to fetch T-3 settled data from Open-Meteo API and save as NDJSON in GCS Landing.
+            """
+            from ingestion.weather_ingest import fetch_weather_region
 
-        bucket_name = Variable.get("GCS_LANDING_BUCKET")
-        hook = GCSHook(gcp_conn_id="google_cloud_default")
-        client = hook.get_conn()
+            # Match weather date to EIA data date (T-3)
+            target_date = data_interval_end - timedelta(days=3)
 
-        fetch_weather_region(region_config, target_date, bucket_name, client)
-        return f"weather/year={target_date.year}/month={target_date.strftime('%m')}/day={target_date.strftime('%d')}/"
+            bucket_name = Variable.get("GCS_LANDING_BUCKET")
+            hook = GCSHook(gcp_conn_id="google_cloud_default")
+            client = hook.get_conn()
 
-    # --- LOADING TASKS (BigQuery) ---
-    # Move EIA data from Landing (GCS) to Bronze (BigQuery)
-    load_eia_to_bronze = BigQueryInsertJobOperator(
-        task_id="load_eia_to_bq_bronze",
-        configuration={
-            "load": {
-                "sourceUris": [
-                    f"gs://{Variable.get('GCS_LANDING_BUCKET')}/"
-                    + "{{task_instance.xcom_pull(task_ids='extract_eia_to_gcs')[0] + '*.json' }}"
-                ],
-                "destinationTable": {
-                    "projectId": "{{ var.value.GCP_PROJECT_ID }}",
-                    "datasetId": "bronze",
-                    "tableId": "eia_raw",
-                },
-                # Use ingestion time as the time partitioning field
-                "timePartitioning": {"type": "DAY", "field": None},
-                "sourceFormat": "NEWLINE_DELIMITED_JSON",
-                "writeDisposition": "WRITE_APPEND",
-                "autodetect": True,
-                "hivePartitioningOptions": {
-                    "mode": "AUTO",
-                    "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/eia/",
-                    "requirePartitionFilter": False,
-                },
-            }
-        },
-        gcp_conn_id="google_cloud_default",
-    )
+            fetch_weather_region(region_config, target_date, bucket_name, client)
+            return f"weather/year={target_date.year}/month={target_date.strftime('%m')}/day={target_date.strftime('%d')}/"
 
-    # Move Weather data from Landing (GCS) to Bronze (BigQuery)
-    load_weather_to_bronze = BigQueryInsertJobOperator(
-        task_id="load_weather_to_bq_bronze",
-        configuration={
-            "load": {
-                "sourceUris": [
-                    f"gs://{Variable.get('GCS_LANDING_BUCKET')}/"
-                    + "{{task_instance.xcom_pull(task_ids='extract_weather_to_gcs')[0] + '*.json' }}"
-                ],
-                "destinationTable": {
-                    "projectId": "{{ var.value.GCP_PROJECT_ID }}",
-                    "datasetId": "bronze",
-                    "tableId": "weather_raw",
-                },
-                # Use ingestion time as the time partitioning field
-                "timePartitioning": {"type": "DAY", "field": None},
-                "sourceFormat": "NEWLINE_DELIMITED_JSON",
-                "writeDisposition": "WRITE_APPEND",
-                "autodetect": True,
-                "hivePartitioningOptions": {
-                    "mode": "AUTO",
-                    "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/weather/",
-                    "requirePartitionFilter": False,
-                },
-            }
-        },
-        gcp_conn_id="google_cloud_default",
-    )
+        eia = extract_eia.expand(region_config=region_list)
+        weather = extract_weather.expand(region_config=region_list)
+        return eia, weather
+
+    # --- LOADING LAYER (BigQuery) ---
+    @task_group(group_id="bigquery_load_layer")
+    def loading_layer():
+
+        # Move EIA data from Landing (GCS) to Bronze (BigQuery)
+        load_eia = BigQueryInsertJobOperator(
+            task_id="load_eia_to_bq_bronze",
+            configuration={
+                "load": {
+                    "sourceUris": [
+                        f"gs://{Variable.get('GCS_LANDING_BUCKET')}/"
+                        + "{{task_instance.xcom_pull(task_ids='api_extraction_layer.extract_eia_api')[0] + '*.json' }}"
+                    ],
+                    "destinationTable": {
+                        "projectId": "{{ var.value.GCP_PROJECT_ID }}",
+                        "datasetId": "bronze",
+                        "tableId": "eia_raw",
+                    },
+                    # Use ingestion time as the time partitioning field
+                    "timePartitioning": {"type": "DAY", "field": None},
+                    "sourceFormat": "NEWLINE_DELIMITED_JSON",
+                    "writeDisposition": "WRITE_APPEND",
+                    "autodetect": True,
+                    "hivePartitioningOptions": {
+                        "mode": "AUTO",
+                        "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/eia/",
+                        "requirePartitionFilter": False,
+                    },
+                }
+            },
+            gcp_conn_id="google_cloud_default",
+        )
+
+        # Move Weather data from Landing (GCS) to Bronze (BigQuery)
+        load_weather = BigQueryInsertJobOperator(
+            task_id="load_weather_to_bq_bronze",
+            configuration={
+                "load": {
+                    "sourceUris": [
+                        f"gs://{Variable.get('GCS_LANDING_BUCKET')}/"
+                        + "{{task_instance.xcom_pull(task_ids='api_extraction_layer.extract_weather_api')[0] + '*.json' }}"
+                    ],
+                    "destinationTable": {
+                        "projectId": "{{ var.value.GCP_PROJECT_ID }}",
+                        "datasetId": "bronze",
+                        "tableId": "weather_raw",
+                    },
+                    # Use ingestion time as the time partitioning field
+                    "timePartitioning": {"type": "DAY", "field": None},
+                    "sourceFormat": "NEWLINE_DELIMITED_JSON",
+                    "writeDisposition": "WRITE_APPEND",
+                    "autodetect": True,
+                    "hivePartitioningOptions": {
+                        "mode": "AUTO",
+                        "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/weather/",
+                        "requirePartitionFilter": False,
+                    },
+                }
+            },
+            gcp_conn_id="google_cloud_default",
+        )
 
     # --- ORCHESTRATION FLOW ---
 
-    regions_list = get_enabled_regions()
-
-    # Trigger Dynamic Mapping
-    eia_extractions = extract_eia_task.expand(region_config=regions_list)
-    weather_extractions = extract_weather_task.expand(region_config=regions_list)
-
-    # Set Dependencies
-    eia_extractions >> load_eia_to_bronze
-    weather_extractions >> load_weather_to_bronze
+    regions = get_enabled_regions()
+    extractions = extraction_layer(regions)
+    extractions >> loading_layer()
 
 
 energy_weather_pipeline()
