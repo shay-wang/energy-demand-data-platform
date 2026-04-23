@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: eia_source
+    dataset: bronze
+    tables:
+      - name: eia_raw
+        description: "Raw hourly electricity demand from EIA API."
+        config:
+          loaded_at_field: _PARTITIONTIME
+          
+  - name: weather_source
+    dataset: bronze
+    tables:
+      - name: weather_raw
+        description: "Raw hourly weather data from Open-Meteo API."
+        config:
+          loaded_at_field: _PARTITIONTIME
