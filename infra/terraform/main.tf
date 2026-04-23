@@ -44,3 +44,10 @@ resource "google_bigquery_dataset" "silver" {
   delete_contents_on_destroy = true
 }
 
+# BigQuery Dataset - Gold Layer
+resource "google_bigquery_dataset" "gold" {
+  dataset_id                 = "gold"
+  location                   = var.location
+  description                = "Final consumption layer for BI tools"
+  delete_contents_on_destroy = true
+}
