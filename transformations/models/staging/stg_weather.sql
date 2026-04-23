@@ -1,5 +1,8 @@
 with raw_weather as (
-    select *  from {{ source('weather_source', 'weather_raw') }}
+    select 
+        *,
+        _PARTITIONTIME
+    from {{ source('weather_source', 'weather_raw') }}
 ),
 
 renamed as (
@@ -21,8 +24,11 @@ renamed as (
         request_lon as target_longitude,
         actual_lat as actual_latitude,
         actual_lon as actual_longitude,
+
+        CAST(_PARTITIONTIME AS DATE) as ingestion_date
         
     from raw_weather
 )
 
 select * from renamed
+QUALIFY ROW_NUMBER() OVER(PARTITION BY timestamp_utc, subba_id ORDER BY ingestion_date DESC)=1
