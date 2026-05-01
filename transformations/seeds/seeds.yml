@@ -16,3 +16,16 @@ seeds:
         description: "The 12-hour clock string representation (e.g., '1 PM') used for categorical axis labels in BI tools."
         tests:
           - not_null
+  
+  - name: ref_regions
+    description: "Master list of energy regions for ingestion."
+    columns:
+      - name: subba_id
+        description: "EIA sub-region ID used for ingestion"
+        tests:
+          - unique
+          - not_null
+      - name: timezone
+        description: "Timezone of the sub-region"
+        tests:
+          - not_null

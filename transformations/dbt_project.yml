@@ -25,6 +25,10 @@ seeds:
   energy_analytics:
     +schema: bronze
 
+snapshots:
+  energy_analytics:
+    +schema: snapshots
+
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
