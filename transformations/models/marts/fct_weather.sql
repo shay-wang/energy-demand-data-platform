@@ -24,8 +24,9 @@ dim_region AS (
 
 SELECT
     dim.region_key,
-    CAST(f.timestamp_utc AS DATE) AS date_key,
-    EXTRACT(HOUR FROM f.timestamp_utc) AS hour_key,
+    CAST(DATETIME(f.timestamp_utc, dim.timezone) AS DATE) AS date_key,
+    EXTRACT(HOUR FROM DATETIME(f.timestamp_utc, dim.timezone)) AS hour_key,
+    DATETIME(f.timestamp_utc, dim.timezone) AS datetime_local,
     f.timestamp_utc,
 
     -- Facts
