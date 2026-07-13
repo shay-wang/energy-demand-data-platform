@@ -1,0 +1,11 @@
+snapshots:
+  - name: regions_snapshot
+    relation: ref('stg_regions')
+    config:
+      unique_key: subba_id
+      hard_deletes: invalidate
+      strategy: check
+      check_cols:
+        - subba_name
+        - balancing_authority_id
+        - balancing_authority_name

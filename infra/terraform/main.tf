@@ -35,3 +35,19 @@ resource "google_bigquery_dataset" "bronze" {
   description                = "Raw ingested data with JSON blobs"
   delete_contents_on_destroy = true
 }
+
+# BigQuery Dataset - Silver Layer
+resource "google_bigquery_dataset" "silver" {
+  dataset_id                 = "silver"
+  location                   = var.location
+  description                = "Intermediate layer with dbt transformations"
+  delete_contents_on_destroy = true
+}
+
+# BigQuery Dataset - Gold Layer
+resource "google_bigquery_dataset" "gold" {
+  dataset_id                 = "gold"
+  location                   = var.location
+  description                = "Final consumption layer for BI tools"
+  delete_contents_on_destroy = true
+}

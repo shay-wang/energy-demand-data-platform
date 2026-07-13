@@ -1,0 +1,248 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      A static calendar dimension table used to join with energy demand and weather fact tables. 
+      It provides attributes for time-series analysis, including weekends and energy-specific seasons.
+    columns:
+      - name: date_day
+        description: "The primary key for the date dimension (YYYY-MM-DD)."
+        tests:
+          - unique
+          - not_null
+      - name: day_of_week
+        description: "Integer representation of the day (e.g., 1 for Monday, 7 for Sunday)."
+      - name: day_of_week_name
+        description: "Full name of the day (e.g., Monday)."
+      - name: day_of_week_name_short
+        description: "Abbreviated name of the day (e.g., Mon)."
+      - name: is_weekend
+        description: "Boolean flag: TRUE for Saturday/Sunday, FALSE otherwise."
+      - name: month_of_year
+        description: "Month number (1-12)."
+      - name: month_name
+        description: "Full month name (e.g., January)."
+      - name: month_name_short
+        description: "Abbreviated month name (e.g., Jan)."
+      - name: quarter_of_year
+        description: "Financial quarter (1-4)."
+      - name: year_number
+        description: "The four-digit year (e.g., 2026)."
+      - name: energy_season
+        description: >
+          Custom categorization of the year based on energy consumption patterns 
+          (e.g., 'Summer Peak' 'Winter Peak' 'Off-Peak').
+
+  - name: dim_hour
+    description: >
+      A time dimension table representing the 24-hour cycle. 
+      Used to analyze peak demand periods and time-of-day energy consumption patterns.
+    columns:
+      - name: hour_key
+        description: "The primary key (0-23). Joins to the fact tables."
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+              quote: false
+      - name: hour_ampm
+        description: "The 12-hour clock representation (e.g., 1 PM, 11 AM)."
+      - name: is_peak_hour
+        description: "Boolean flag identifying high-demand hours (e.g., 6 PM - 9 PM)."
+      - name: time_of_day_name
+        description: "Descriptive part of the day (e.g., Morning, Afternoon, Evening, Night)."
+      - name: peak_type
+        description: "Categorization of demand intensity (e.g., Off-Peak, Evening Peak, Morning Peak)."
+
+  - name: dim_region
+    description: >
+      A Type 2 Slowly Changing Dimension (SCD) table for regional metadata. 
+      It tracks changes in Balancing Authority (BA) relationships and regional timezones 
+      over time, ensuring that historical electricity demand is joined to the correct 
+      regional context.
+    columns:
+      - name: region_key
+        description: "The primary surrogate key for the dimension, uniquely identifying a specific version of a region."
+        tests:
+          - unique
+          - not_null
+      - name: subba_id
+        description: "The unique identifier for the sub-balancing authority (e.g., 'CISO')."
+      - name: subba_name
+        description: "The full name of the sub-balancing authority."
+      - name: balancing_authority_id
+        description: "The unique code for the parent Balancing Authority managing the grid."
+      - name: balancing_authority_name
+        description: "The full descriptive name of the Balancing Authority."
+      - name: timezone
+        description: "The local timezone string (e.g., 'America/Chicago'). Essential for UTC-to-local conversion."
+        tests:
+          - not_null
+      - name: valid_from
+        description: "The timestamp indicating when this version of the regional data became active."
+        tests:
+          - not_null
+      - name: valid_to
+        description: "The timestamp indicating when this version was superseded. '9999-12-31' indicates the version is currently active."
+      - name: last_modified_at
+        description: "The system timestamp of the last record update."
+      - name: is_current
+        description: "Boolean flag: TRUE if this is the most up-to-date version of the region."
+        tests:
+          - not_null
+
+  - name: fct_electricity_demand
+    description: >
+      The central fact table containing hourly electricity demand measurements. 
+      This table joins to dim_date, dim_hour, and dim_region to provide a 
+      comprehensive view of grid load across different geographic and time segments.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - region_key
+              - timestamp_utc
+    columns:
+      # --- SURROGATE & FOREIGN KEYS ---
+      - name: region_key
+        description: "Surrogate key from dim_region. Links the measurement to the specific SCD Type 2 regional version."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_region')
+                field: region_key
+
+      - name: date_key
+        description: >
+          The local calendar date of the measurement, derived from datetime_local. 
+          Acts as the join key to dim_date for accurate localized reporting.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+
+      - name: hour_key
+        description: >
+          The local hour integer (0-23) of the measurement, derived from datetime_local. 
+          Acts as the join key to dim_hour for evaluating localized peak demand.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_hour')
+                field: hour_key
+
+      # --- NATURAL KEYS & TIMESTAMPS ---
+      - name: subba_id
+        description: "The natural key identifier for the sub-balancing authority."
+
+      - name: balancing_authority_id
+        description: "The natural key identifier for the parent balancing authority."
+
+      - name: timestamp_utc
+        description: >
+          The absolute physical moment of the measurement in UTC. 
+          Maintains the unique grain constraint of the table and prevents record collision during DST transitions.
+        tests:
+          - not_null
+
+      - name: datetime_local
+        description: >
+          The wall-clock date and time in the region's local timezone. 
+          Calculated using BigQuery's DATETIME function with dynamic IANA timezone lookups.
+        tests:
+          - not_null
+
+      - name: demand_mw
+        description: "The electricity demand measured in Megawatts (MW)."
+        tests:
+          - not_null
+          
+      # --- AUDIT ---
+      - name: last_updated_at
+        description: "The date this weather data row was last fetched or overwritten by the Open-Meteo API pipeline."
+
+  - name: fct_weather
+    description: "A fact table tracking hourly historical and forecasted weather metrics at the regional level." 
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - region_key
+              - timestamp_utc
+    columns:
+      # --- SURROGATE & FOREIGN KEYS ---
+      - name: region_key
+        description: "Surrogate key from dim_region. Links weather metrics to a specific version of a geographic region."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_region')
+                field: region_key
+
+      - name: date_key
+        description: >
+          The local calendar date of the weather reading, derived from datetime_local. 
+          Acts as a join key to dim_date.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+
+      - name: hour_key
+        description: >
+          The local hour integer (0-23) of the weather reading, derived from datetime_local. 
+          Acts as a join key to dim_hour.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_hour')
+                field: hour_key
+
+      # --- TIMESTAMPS ---
+      - name: datetime_local
+        description: >
+          The wall-clock date and time in the region's local timezone. 
+          Used to align weather trends with local consumer behavior.
+        tests:
+          - not_null
+
+      - name: timestamp_utc
+        description: >
+          The absolute physical moment of the weather observation in UTC. 
+          Ensures a unique grain constraint per region-hour and protects against DST overlaps.
+        tests:
+          - not_null
+
+      # --- WEATHER METRICS ---
+      - name: temperature_fahrenheit
+        description: "The recorded ambient temperature in degrees Fahrenheit."
+        tests:
+          - not_null
+
+      - name: relative_humidity_pct
+        description: "Relative humidity expressed as a percentage (0-100)."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+
+      - name: apparent_temperature_fahrenheit
+        description: "The perceived 'feels like' temperature, accounting for heat index or wind chill."
+
+      - name: wind_speed_mph
+        description: "Wind speed measured in miles per hour."
+
+      # --- AUDIT ---
+      - name: last_updated_at
+        description: "The date this weather data row was last fetched or overwritten by the Open-Meteo API pipeline."

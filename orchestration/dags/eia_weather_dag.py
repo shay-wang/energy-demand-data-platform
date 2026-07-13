@@ -2,11 +2,11 @@ from datetime import timedelta
 import yaml
 import pendulum
 from airflow.decorators import dag, task, task_group
+from airflow.operators.bash import BashOperator
 from airflow.models import Variable
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
-from airflow.providers.google.cloud.operators.bigquery import (
-    BigQueryInsertJobOperator,
-)
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+import time
 
 local_tz = pendulum.timezone("America/Chicago")
 CONFIG_PATH = "/opt/airflow/ingestion/regions.yaml"
@@ -18,11 +18,11 @@ CONFIG_PATH = "/opt/airflow/ingestion/regions.yaml"
     start_date=pendulum.datetime(2026, 2, 10, tz=local_tz),
     schedule="0 1 * * *",  # Everyday at 1:00 am Central time
     catchup=False,
-    tags=["eia", "weather", "ingestion", "bronze"],
+    tags=["eia", "weather", "ingestion", "bronze", "silver", "gold"],
     max_active_runs=1,
     default_args={
         "retries": 1,
-        "retry_delay": timedelta(minutes=5),
+        "retry_delay": timedelta(minutes=1),
     },
 )
 def energy_weather_pipeline():
@@ -111,11 +111,6 @@ def energy_weather_pipeline():
                     "sourceFormat": "NEWLINE_DELIMITED_JSON",
                     "writeDisposition": "WRITE_APPEND",
                     "autodetect": True,
-                    "hivePartitioningOptions": {
-                        "mode": "AUTO",
-                        "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/eia/",
-                        "requirePartitionFilter": False,
-                    },
                 }
             },
             gcp_conn_id="google_cloud_default",
@@ -140,21 +135,24 @@ def energy_weather_pipeline():
                     "sourceFormat": "NEWLINE_DELIMITED_JSON",
                     "writeDisposition": "WRITE_APPEND",
                     "autodetect": True,
-                    "hivePartitioningOptions": {
-                        "mode": "AUTO",
-                        "sourceUriPrefix": f"gs://{Variable.get('GCS_LANDING_BUCKET')}/weather/",
-                        "requirePartitionFilter": False,
-                    },
                 }
             },
             gcp_conn_id="google_cloud_default",
         )
+    
+    # --- TRANSFORMATION LAYER (Silver/Gold) ---
+    dbt_transformations = BashOperator(
+        task_id="dbt_build_medallion",
+        bash_command="cd /opt/airflow/transformations && dbt build",
+        append_env=True,
+    )
 
     # --- ORCHESTRATION FLOW ---
 
     regions = get_enabled_regions()
     extractions = extraction_layer(regions)
-    extractions >> loading_layer()
+    loads = loading_layer()
 
+    extractions >> loads >> dbt_transformations
 
 energy_weather_pipeline()
