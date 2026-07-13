@@ -11,16 +11,16 @@ tmp/
 airflow/logs/
 airflow/plugins/__pycache__/
 
-# Data
-data/**
-!data/README.md
-
 # VS Code
 .vscode/
 
 # Credentials
 .creds/
 *.json
+
+# Data
+# data/**
+# !data/README.md
 
 # Local .terraform directories
 .terraform/
