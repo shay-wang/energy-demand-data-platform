@@ -1,3 +1,30 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: custom-airflow:2.8.4-python3.11
+  user: "${AIRFLOW_UID:-1000}:0"
+  env_file:
+    - .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "dev-secret-key"
+    PYTHONPATH: /opt/airflow
+    DBT_PROFILES_DIR: /opt/airflow/transformations
+    DBT_KEY_PATH: /opt/airflow/.creds/dbt-sa-key.json
+    AIRFLOW_VAR_EIA_API_KEY: ${EIA_API_KEY}
+    AIRFLOW_VAR_GCS_LANDING_BUCKET: ${GCS_LANDING_BUCKET}
+    AIRFLOW_VAR_GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+    AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: "google-cloud-platform://?extra__google_cloud_platform__key_path=%2Fopt%2Fairflow%2F.creds%2Fingest-sa-key.json"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ../ingestion:/opt/airflow/ingestion
+    - ../transformations:/opt/airflow/transformations
+    - ../.creds:/opt/airflow/.creds
+    - airflow-logs:/opt/airflow/logs
+
 services:
   postgres:
     image: postgres:13
@@ -9,40 +36,38 @@ services:
       - postgres-db-volume:/var/lib/postgresql/data
 
   airflow-webserver:
-    image: apache/airflow:2.8.4-python3.10
+    <<: *airflow-common
+    command: webserver
     depends_on:
       - postgres
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__WEBSERVER__SECRET_KEY: "dev-secret-key"
-      PYTHONPATH: /opt/airflow
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ../ingestion:/opt/airflow/ingestion
-      - ../data:/opt/airflow/data
-      - airflow-logs:/opt/airflow/logs
     ports:
       - "8080:8080"
-    command: webserver
 
   airflow-scheduler:
-    image: apache/airflow:2.8.4-python3.10
+    <<: *airflow-common
+    command: scheduler
     depends_on:
       - airflow-webserver
+  
+  airflow-init:
+    <<: *airflow-common
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      AIRFLOW__WEBSERVER__SECRET_KEY: "dev-secret-key"
-      PYTHONPATH: /opt/airflow
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ../ingestion:/opt/airflow/ingestion
-      - ../data:/opt/airflow/data
-      - airflow-logs:/opt/airflow/logs
-    command: scheduler
-
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+      _AIRFLOW_WWW_USER_FIRSTNAME: Admin
+      _AIRFLOW_WWW_USER_LASTNAME: User
+      _AIRFLOW_WWW_USER_EMAIL: admin@example.com
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "📥 Downloading project dbt packages..."
+        cd /opt/airflow/transformations && dbt deps
+        echo "🚀 Initializing Airflow database and admin user..."
+        exec /entrypoint version
+      
 volumes:
   postgres-db-volume:
   airflow-logs:
