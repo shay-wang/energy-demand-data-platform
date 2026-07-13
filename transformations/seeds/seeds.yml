@@ -12,6 +12,7 @@ seeds:
           - unique
           - accepted_values:
               values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+              quote: false
       - name: hour_ampm
         description: "The 12-hour clock string representation (e.g., '1 PM') used for categorical axis labels in BI tools."
         tests:

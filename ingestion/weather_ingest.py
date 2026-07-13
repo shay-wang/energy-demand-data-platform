@@ -2,7 +2,17 @@ import os
 import json
 import requests
 from datetime import datetime
+import logging
+import sys
+import time
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 def fetch_weather_region(
     region_conf, target_date: datetime, bucket_name=None, client=None, local_path=None
@@ -13,9 +23,11 @@ def fetch_weather_region(
     subba = region_conf["id"]
     lat = region_conf["lat"]
     lon = region_conf["lon"]
-
+    logger.info(f"🚀 Starting ingestion for region: {subba} | Target Date: {target_date.strftime('%Y-%m-%d')}")
+    start_time = time.time()
+    
     # Fetch data from Open-Meteo API URL, requesting temperature, humidity, feels like, and wind speed
-    url = "https://api.open-meteo.com/v1/forecast"
+    url = "https://archive-api.open-meteo.com/v1/archive"
 
     params = {
         "latitude": lat,
@@ -27,25 +39,38 @@ def fetch_weather_region(
         "wind_speed_unit": "mph",
         "timezone": "UTC",
     }
+    
+    try:
+        logger.info(f"📡 Requesting Open-Meteo API data for subba={subba}...")
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        res_json = response.json()
+        rows_fetched = len(res_json["hourly"]["time"])
+        
+        if rows_fetched == 0:
+            logger.warning(f"⚠️ API request successful, but 0 records returned for region {subba}.")
+        else:
+            logger.info(f"✅ Successfully fetched {rows_fetched} records from Open-Meteo.")
 
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    res_json = response.json()
-    actual_lat = res_json.get('latitude')
-    actual_lon = res_json.get('longitude')
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ HTTP Request failed for region {subba}.")
+        logger.error(f"Reason: {e.__class__.__name__} -> {str(e)}")
+        sys.exit(1)
 
     # Convert to NDJSON
+    actual_lat = res_json.get("latitude")
+    actual_lon = res_json.get("longitude")
     hourly_data = res_json["hourly"]
     records = []
 
     for i in range(len(hourly_data["time"])):
         record = {
             "timestamp_utc": hourly_data["time"][i],
-            "subba": subba,                 # add region join key
-            "request_lat": lat,             # lat used for fetching (from YAML)
-            "request_lon": lon,             # lon used for fetching (from YAML)
-            "actual_lat": actual_lat,       # lat returned from API
-            "actual_lon": actual_lon,       # lon returned from API
+            "subba": subba,  # add region join key
+            "request_lat": lat,  # lat used for fetching (from YAML)
+            "request_lon": lon,  # lon used for fetching (from YAML)
+            "actual_lat": actual_lat,  # lat returned from API
+            "actual_lon": actual_lon,  # lon returned from API
             "temp_f": hourly_data["temperature_2m"][i],
             "humidity_pct": hourly_data["relative_humidity_2m"][i],
             "apparent_temp_f": hourly_data["apparent_temperature"][i],
@@ -63,19 +88,25 @@ def fetch_weather_region(
     if local_path:
         full_local_dir = os.path.join(local_path, "weather", date_path)
         os.makedirs(full_local_dir, exist_ok=True)
-        with open(os.path.join(full_local_dir, file_name), "w") as f:
+        target_file = os.path.join(full_local_dir, file_name)
+        with open(target_file, "w") as f:
             f.write(ndjson_content)
-        print(f"Saved locally to {full_local_dir}/{file_name}")
+        f"💾 Local Write: Saved {rows_fetched} rows to {target_file}"
 
     # Upload to GCS (For Production)
     if client and bucket_name:
         gcs_path = f"weather/{date_path}/{file_name}"
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(gcs_path)
-        blob.upload_from_string(ndjson_content, content_type="application/x-ndjson")
-        print(f"Successfully uploaded to gs://{bucket_name}/{gcs_path}")
 
+        logger.info(f"💾 Streaming upload initiated for gs://{bucket_name}/{gcs_path}...")
+        blob.upload_from_string(ndjson_content, content_type="application/x-ndjson")
+        logger.info(f"📥 GCS Upload Success: Wrote {rows_fetched} rows to gs://{bucket_name}/{gcs_path}")
+
+    duration = round(time.time() - start_time, 2)
+    logger.info(f"🏁 Finished processing region: {subba} in {duration} seconds.")
     return records
+
 
 if __name__ == "__main__":
     import yaml
@@ -98,15 +129,15 @@ if __name__ == "__main__":
     with open("ingestion/regions.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    # fetch_weather_region(
-    #     region_conf=config['regions'][0],
-    #     target_date=datetime(2026, 2, 10),
-    #     local_path=PROJECT_ROOT / "data"
-    # )
-
     fetch_weather_region(
-        region_conf=config["regions"][0],
-        target_date=datetime(2026, 2, 12),
-        client=client,
-        bucket_name=bucket_name,
+        region_conf=config['regions'][0],
+        target_date=datetime(2026, 2, 10),
+        local_path=PROJECT_ROOT / "data"
     )
+
+    # fetch_weather_region(
+    #     region_conf=config["regions"][0],
+    #     target_date=datetime(2026, 2, 12),
+    #     client=client,
+    #     bucket_name=bucket_name,
+    # )

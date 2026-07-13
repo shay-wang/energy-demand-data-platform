@@ -2,6 +2,17 @@ import requests
 import json
 from datetime import datetime
 import os
+import logging
+import sys
+import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 
 def fetch_single_region(
@@ -11,6 +22,8 @@ def fetch_single_region(
     Fetches data for ONE region and saves it either to GCS or Local Disk.
     """
     subba = region_conf["id"]
+    logger.info(f"🚀 Starting ingestion for region: {subba} | Target Date: {target_date.strftime('%Y-%m-%d')}")
+    start_time = time.time()
 
     # Fetch data
     url = "https://api.eia.gov/v2/electricity/rto/region-sub-ba-data/data/"
@@ -25,10 +38,23 @@ def fetch_single_region(
         "sort[0][direction]": "asc",
     }
 
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()["response"]["data"]
+    try:
+        logger.info(f"📡 Requesting EIA API data for subba={subba}...")
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()["response"]["data"]
+        rows_fetched = len(data)
 
+        if rows_fetched == 0:
+            logger.warning(f"⚠️ API request successful, but 0 records returned for region {subba}.")
+        else:
+            logger.info(f"✅ Successfully fetched {rows_fetched} records from EIA.")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ HTTP Request failed for region {subba}.")
+        logger.error(f"Reason: {e.__class__.__name__} -> {str(e)}")
+        sys.exit(1)
+    
     # Convert to NDJSON
     ndjson_content = "\n".join([json.dumps(record) for record in data])
 
@@ -40,18 +66,23 @@ def fetch_single_region(
     if local_path:
         full_local_dir = os.path.join(local_path, "eia", date_path)
         os.makedirs(full_local_dir, exist_ok=True)
-        with open(os.path.join(full_local_dir, file_name), "w") as f:
+        target_file = os.path.join(full_local_dir, file_name)
+        with open(target_file, "w") as f:
             f.write(ndjson_content)
-        print(f"Saved locally to {full_local_dir}/{file_name}")
+        f"💾 Local Write: Saved {rows_fetched} rows to {target_file}"
 
     # Upload to GCS (For Production)
     if client and bucket_name:
         gcs_path = f"eia/{date_path}/{file_name}"
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(gcs_path)
-        blob.upload_from_string(ndjson_content, content_type="application/x-ndjson")
-        print(f"Successfully uploaded to gs://{bucket_name}/{gcs_path}")
 
+        logger.info(f"💾 Streaming upload initiated for gs://{bucket_name}/{gcs_path}...")
+        blob.upload_from_string(ndjson_content, content_type="application/x-ndjson")
+        logger.info(f"📥 GCS Upload Success: Wrote {rows_fetched} rows to gs://{bucket_name}/{gcs_path}")
+
+    duration = round(time.time() - start_time, 2)
+    logger.info(f"🏁 Finished processing region: {subba} in {duration} seconds.")
     return data
 
 
@@ -76,17 +107,17 @@ if __name__ == "__main__":
     with open("ingestion/regions.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    # fetch_single_region(
-    #     api_key=os.getenv("EIA_API_KEY"),
-    #     region_conf=config['regions'][0],
-    #     target_date=datetime(2026, 2, 10),
-    #     local_path=PROJECT_ROOT / "data"
-    # )
-
     fetch_single_region(
         api_key=os.getenv("EIA_API_KEY"),
-        region_conf=config["regions"][0],
-        target_date=datetime(2026, 2, 12),
-        client=client,
-        bucket_name=bucket_name,
+        region_conf=config['regions'][0],
+        target_date=datetime(2025, 12, 4),
+        local_path=PROJECT_ROOT / "data"
     )
+
+    # fetch_single_region(
+    #     api_key=os.getenv("EIA_API_KEY"),
+    #     region_conf=config["regions"][0],
+    #     target_date=datetime(2026, 2, 12),
+    #     client=client,
+    #     bucket_name=bucket_name,
+    # )

@@ -8,7 +8,13 @@ sources:
         description: "Raw hourly electricity demand from EIA API."
         config:
           loaded_at_field: _PARTITIONTIME
-          
+          freshness:
+            warn_after:
+              count: 24
+              period: hour
+            error_after:
+              count: 48
+              period: hour
   - name: weather_source
     dataset: bronze
     tables:
@@ -16,3 +22,10 @@ sources:
         description: "Raw hourly weather data from Open-Meteo API."
         config:
           loaded_at_field: _PARTITIONTIME
+          freshness:
+            warn_after:
+              count: 24
+              period: hour
+            error_after:
+              count: 48
+              period: hour
